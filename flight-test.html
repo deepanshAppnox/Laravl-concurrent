@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Flight Search Streaming Test</title>
+</head>
+<body>
+  <h2>Flight Search Streaming Test</h2>
+  <button onclick="searchFlights()">Start Search</button>
+
+  <div id="results" style="margin-top: 20px;"></div>
+  <div id="errors" style="margin-top: 20px; color: red;"></div>
+
+  <script>
+    async function searchFlights() {
+      const resultsDiv = document.getElementById("results");
+      const errorsDiv = document.getElementById("errors");
+
+      // Reset only at the beginning
+      resultsDiv.innerHTML = "<p><strong>Fetching flight data...</strong></p>";
+      errorsDiv.innerHTML = "";
+
+      try {
+        const response = await fetch("http://192.168.1.48:8000/api/flight-list", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJhdWQiOiI3IiwianRpIjoiNjZkNGRiNDlmM2ZhNjQyODhlMGE3YzU1MDQ4YzM0Y2VlYWI4ZGJkZTBiMWJjNTVlNTYwOGZmNWU5MDljNTU3ZjM1YzIxNDU0NzU2YmMxN2EiLCJpYXQiOjE3NDQwMjUwNDEuNDE5MjM4LCJuYmYiOjE3NDQwMjUwNDEuNDE5MjQyLCJleHAiOjE3NzU1NjEwNDEuNDAwNzYsInN1YiI6IjIzOSIsInNjb3BlcyI6W119.LcG-V0FyXQNSYq3Go7Oa8QIKLMHER8RDbVPu9GPv-gYTbSCaalSRUjS3ioUwvxQVZ0ODGUZxSIXE-dKu46UERHa2zqS6leIWnHw_ud15nM0_MS92hSp1CKM44_t_Lc_ZjOAx40hIdvMJS6FO25G1TRvcxujdY_P3kadhLYyBM9Ovov8GtECJ24YBoToXs0Q5cVo-AkYirFoCNbTo3rhlNXkfql4Pf5RrnRL8HJOgj1LJ9H8AwhHRViIwT8uXMcROFLxX3DybYbPsNjpzAowcBI3RkDXr1sqRQIb6Hs46dYt8j8pTJrRO1eCHw-pprrT6Msjsswlu7Ea-ebZd_gnFwc_m-yeEzcJ_gU_ijyCA4Qb_rvFh9fgGQKyfXkv4mBkoHuT_olt8uUqd4xrPxbfxyMO_xVj_qR4sQfII75h5WkNZ4yO2Zt__ff9e9Yd43THngPcrOTCLPbxf_Sh5CTNQV64GfwbgaU_x_gj1lI_jQRz80cOIZd_g8Z7-YYjrdgInTxA-CfY2gvmXysmYHiECEGfl13I4gURb84BQTX1LYWZzC7UM83nhC5JHQR1jChfvm_WLwsAJ2V3i36WPkHe7CUtgUGGNOjH0N19PzGaBC07Es1qOi6NzdNWsYIMe3M1JWOoF02je4Ynb7lYgjPb8bJQFsq6trfPnB-uUTvPqnTo",
+                        "sessionid": "1520",
+                        "sessiontoken": "6FJZNzNKUxnVTfgSt90lQyi7KlS6tgE4FsGKKYbZhRH30em3mHfioLWAEE7jF8JA983F7znQouNQHAG91JUfcI5l7VpXmi1rcr6JQPM1ZsHbJooP8PixWpslPlYKZjh1",
+                    },
+                    body: JSON.stringify({
+                        "dossierId": 397,
+                        "dossierCode": "50000B1",
+                        "serviceTypeId": 1,
+                        "locale": "en",
+                        "currency": "EUR",
+                        "pax": {
+                            "adult": 1
+                        },
+                        "cabinPref": "Economy",
+                        "passengerTypes": [
+                            "PNOS"
+                        ],
+                        "routes": [
+                            {
+                                "origin": "IST",
+                                "destination": "MLA",
+                                "departureDate": "2025-04-07T00:00:00"
+                            },
+                            {
+                                "origin": "MLA",
+                                "destination": "IST",
+                                "departureDate": "2025-04-08T00:00:00"
+                            }
+                        ],
+                        "currencyCode": "EUR"
+                    })
+                });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+
+          const chunks = buffer.split("\n\n");
+          for (let i = 0; i < chunks.length - 1; i++) {
+            const line = chunks[i].trim();
+            if (line.startsWith("data: ")) {
+              const jsonStr = line.replace("data: ", "");
+              console.log("RAW CHUNK:", jsonStr);
+
+              try {
+                const data = JSON.parse(jsonStr);
+
+                // Append result instead of replacing
+                const div = document.createElement("div");
+                div.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+                resultsDiv.appendChild(div);
+              } catch (err) {
+                console.error("❌ JSON parse error:", err, jsonStr);
+                errorsDiv.innerHTML += `<p>JSON Parse Error: ${err.message}</p>`;
+              }
+            }
+          }
+
+          buffer = chunks[chunks.length - 1];
+        }
+
+        resultsDiv.innerHTML += "<p><strong>✅ Streaming completed.</strong></p>";
+      } catch (error) {
+        console.error("❌ Fetch error:", error);
+        errorsDiv.innerHTML += `<p>Fetch Error: ${error.message}</p>`;
+      }
+    }
+  </script>
+</body>
+</html>
