@@ -8,12 +8,7 @@ use Illuminate\Support\Facades\Log;
 
 class FlightController extends Controller
 {
-    /**
-     * Streams flight search data from multiple APIs as Server-Sent Events (SSE).
-     *
-     * @param Request $request
-     * @return \Symfony\Component\HttpFoundation\StreamedResponse
-     */
+
     public function streamFlightData(Request $request)
     {
         return Response::stream(function () use ($request) {
@@ -41,13 +36,7 @@ class FlightController extends Controller
         ]);
     }
 
-    /**
-     * Prepares payloads for each API based on common input.
-     *
-     * @param array $endpoints
-     * @param array $commonPayload
-     * @return array
-     */
+
     private function prepareApiPayloads(array $endpoints, array $commonPayload)
     {
         $apiPayloads = [];
@@ -106,15 +95,6 @@ class FlightController extends Controller
     }
 
 
-    /**
-     * Sends concurrent requests to each API and streams the response as it arrives.
-     *
-     * @param array $apiPayloads
-     * @param string $authToken
-     * @param string $sessionId
-     * @param string $sessionToken
-     * @return void
-     */
     private function fetchAndStreamResponses(array $apiPayloads, string $authToken, string $sessionId, string $sessionToken)
     {
         Log::info('Starting to fetch and stream flight responses.');
@@ -172,11 +152,18 @@ class FlightController extends Controller
                     $flightType = str_contains($url, 'turkishservice') ? 'turkishservice' : 'flightservice';
 
                     $decoded = json_decode($response, true);
-
+                    if(!$decoded['success']){
+                        Log::warning("$flightType response skipped due to success = false", [
+                            'message' => $decoded['message'] ?? 'No message',
+                        ]);
+                        continue;
+                    }
+                    $data = $this->normalize($flightType, $decoded);
                     if (json_last_error() === JSON_ERROR_NONE) {
                         echo "data: " . json_encode([
                             "type" => $flightType,
-                            "data" => $decoded,
+                            // "data" => $flightType == "flightservice"?$decoded['result']['data']['itineraryGroup'][0]['flights']:$decoded['result']['data'],
+                            "data" => $data,
                         ]) . "\n\n";
                     } else {
                         echo "data: " . json_encode([
@@ -226,13 +213,6 @@ class FlightController extends Controller
     }
 
 
-    /**
-     * Maps passenger types to API-specific codes.
-     *
-     * @param array $pax
-     * @param string $apiType
-     * @return array
-     */
     private function mapPassengers(array $pax, string $apiType)
     {
         $turkishPassengerMap = [
@@ -266,12 +246,6 @@ class FlightController extends Controller
         return $passengerList;
     }
 
-    /**
-     * Maps cabin preference strings to API-specific integer codes.
-     *
-     * @param string $cabinPref
-     * @return int
-     */
     private function mapCabinType($cabinPref)
     {
         return match ($cabinPref) {
@@ -281,4 +255,109 @@ class FlightController extends Controller
             default    => 0,
         };
     }
+
+    private function normalize(string $type, array $response): array
+    {
+        return match ($type) {
+            'flightservice'   => $this->normalizeFlightService($response['result']['data']['itineraryGroup'][0]['flights']),
+            'turkishservice'  => $this->normalizeTurkishService($response['result']['data']),
+            default           => [],
+        };
+    }
+
+    private function normalizeFlightService(array $flights): array
+    {
+        if (empty($flights)) {
+            return [];
+        }
+
+        return collect($flights)->map(function ($flight) {
+            return [
+                'itineraryId' => $flight['itineraryId'] ?? null,
+                'fare' => [
+                    'totalAmount' => $flight['pricingInformation'][0]['totalFare']['totalPrice'] ?? 0,
+                    'currency'    => $flight['pricingInformation'][0]['totalFare']['currency'] ?? 'USD',
+                    'baseFare'    => $flight['pricingInformation'][0]['totalFare']['baseFareAmount'] ?? 0,
+                    'taxAmount'   => $flight['pricingInformation'][0]['totalFare']['totalTaxAmount'] ?? 0,
+                ],
+                'segments' => collect($flight['legs'] ?? [])->flatMap(function ($leg) {
+                    return collect($leg['schedules'])->map(function ($schedule) {
+                        return [
+                            'origin'        => $schedule['departure']['airport'] ?? null,
+                            'destination'   => $schedule['arrival']['airport'] ?? null,
+                            'departureTime' => $schedule['departure']['time'] ?? null,
+                            'arrivalTime'   => $schedule['arrival']['time'] ?? null,
+                            'carrier'       => $schedule['carrier']['marketing'] ?? null,
+                            'flightNumber'  => $schedule['carrier']['marketingFlightNumber'] ?? null,
+                            'aircraft'      => $schedule['carrier']['equipment']['code'] ?? null,
+                        ];
+                    });
+                })->values()->toArray(),
+                'passengers' => collect($flight['pricingInformation'][0]['passengerInfoList'] ?? [])->map(function ($passenger) {
+                    return [
+                        'type'     => $passenger['passengerType'] ?? null,
+                        'fare'     => $passenger['passengerTotalFare']['totalFare'] ?? 0,
+                        'currency' => $passenger['passengerTotalFare']['currency'] ?? 'USD',
+                        'baggage'  => $passenger['baggageInformation'] ?? [],
+                        'penalties' => $passenger['penalties'] ?? [],
+                        'seats' => collect($passenger['fareComponents'] ?? [])->flatMap(function ($comp) {
+                            return collect($comp['segments'] ?? [])->map(function ($seg) {
+                                return [
+                                    'cabinType'      => $seg['cabinType'] ?? null,
+                                    'seatsAvailable' => $seg['seatsAvailable'] ?? null,
+                                    'bookingCode'    => $seg['bookingCode'] ?? null,
+                                ];
+                            });
+                        })->toArray()
+                    ];
+                })->toArray(),
+                'source' => 'flightservice'
+            ];
+        })->toArray();
+    }
+
+
+
+    private function normalizeTurkishService(array $response): array
+    {
+        if (empty($response)) {
+            return [];
+        }
+
+        // If Turkish service returns multiple offers inside an array
+        $offers = is_array($response) && isset($response[0]) ? $response : [$response];
+
+        return collect($offers)->map(function ($offer) {
+            return [
+                'itineraryId' => $offer['OfferID'] ?? null,
+                'fare' => [
+                    'totalAmount' => $offer['Price']['TotalAmount'] ?? 0,
+                    'currency'    => 'USD', // Adjust if your API returns currency
+                    'baseFare'    => $offer['Price']['EquivAmount'] ?? 0,
+                    'taxAmount'   => $offer['Price']['TaxSummary']['TotalTaxAmount'] ?? 0,
+                ],
+                'segments' => collect($offer['legs'] ?? [])->flatten(1)->map(function ($segment) {
+                    return [
+                        'origin'        => $segment['Departure']['IATA_LocationCode'] ?? null,
+                        'destination'   => $segment['Arrival']['IATA_LocationCode'] ?? null,
+                        'departureTime' => $segment['Departure']['AircraftScheduledDateTime'] ?? null,
+                        'arrivalTime'   => $segment['Arrival']['AircraftScheduledDateTime'] ?? null,
+                        'carrier'       => $segment['CarrierDesigCode'] ?? null,
+                        'flightNumber'  => $segment['MarketingCarrierFlightNumberText'] ?? null,
+                        'aircraft'      => $segment['CarrierAircraftType']['IATA_AircraftTypeCode'] ?? null,
+                    ];
+                })->toArray(),
+                'passengers' => collect($offer['PaxRefIDs'] ?? [])->map(function ($refId) {
+                    return [
+                        'passengerRef' => $refId
+                    ];
+                })->toArray(),
+                'baggage'  => $offer['baggageAllowance'] ?? [],
+                'services' => collect($offer['serviceDefinition'] ?? [])->pluck('Name')->toArray(),
+                'source'   => 'turkishservice'
+            ];
+        })->toArray();
+    }
+
+
 }
