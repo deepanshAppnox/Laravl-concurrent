@@ -131,7 +131,6 @@ class FlightController extends Controller
             curl_setopt_array($curl, [
                 CURLOPT_URL            => $url,
                 CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT        => 1000,
                 CURLOPT_POST           => true,
                 CURLOPT_POSTFIELDS     => $jsonPayload,
                 CURLOPT_HTTPHEADER     => [
@@ -139,58 +138,93 @@ class FlightController extends Controller
                     'Authorization: ' . $authToken,
                     'sessionid: ' . $sessionId,
                     'sessiontoken: ' . $sessionToken,
-                ]
+                ],
+                CURLOPT_TIMEOUT            => 30,    // total timeout in seconds
+                CURLOPT_CONNECTTIMEOUT     => 10,
+                CURLOPT_LOW_SPEED_LIMIT    => 1,
+                CURLOPT_LOW_SPEED_TIME     => 10,
+                CURLOPT_HEADER             => false,
             ]);
 
             curl_multi_add_handle($multiHandle, $curl);
-
             $curlHandles[spl_object_id($curl)] = [
                 'handle' => $curl,
-                'url' => $url
+                'url'    => $url,
             ];
         }
 
         do {
             $status = curl_multi_exec($multiHandle, $active);
-            curl_multi_select($multiHandle);
+            while ($info = curl_multi_info_read($multiHandle)) {
+                $handle = $info['handle'];
+                $key = spl_object_id($handle);
+                $url = $curlHandles[$key]['url'];
 
-            foreach ($curlHandles as $key => $meta) {
-                $ch = $meta['handle'];
-                $url = $meta['url'];
-
-                $info = curl_getinfo($ch);
-
-                if ($info['http_code'] != 0) {
-                    $response = curl_multi_getcontent($ch);
+                if ($info['result'] === CURLE_OK) {
+                    $response = curl_multi_getcontent($handle);
+                    $httpCode = curl_getinfo($handle, CURLINFO_HTTP_CODE);
 
                     Log::info("Response received from $url", [
-                        'http_code' => $info['http_code'],
-                        'raw_response' => json_encode($response, true)
+                        'http_code'     => $httpCode,
+                        'raw_response'  => $response
                     ]);
-
-                    curl_multi_remove_handle($multiHandle, $ch);
-                    curl_close($ch);
-                    unset($curlHandles[$key]);
 
                     $flightType = str_contains($url, 'turkishservice') ? 'turkishservice' : 'flightservice';
 
-                    echo "data: " . json_encode([
-                        "type" => $flightType,
-                        "data" =>  $response,
-                    ]) . "\n\n";
+                    $decoded = json_decode($response, true);
+
+                    if (json_last_error() === JSON_ERROR_NONE) {
+                        echo "data: " . json_encode([
+                            "type" => $flightType,
+                            "data" => $decoded,
+                        ]) . "\n\n";
+                    } else {
+                        echo "data: " . json_encode([
+                            "type" => $flightType,
+                            "data" => [
+                                "error" => "Invalid JSON from $flightType",
+                                "raw" => $response
+                            ]
+                        ]) . "\n\n";
+                    }
 
                     @ob_flush();
                     flush();
                     usleep(50000);
-                } elseif ($info['http_code'] === 0) {
-                    Log::warning("No response yet from $url", ['info' => $info]);
+
+                    curl_multi_remove_handle($multiHandle, $handle);
+                    curl_close($handle);
+                    unset($curlHandles[$key]);
+                } else {
+                    Log::error("Curl error on $url", [
+                        'error' => curl_error($handle),
+                        'errno' => curl_errno($handle)
+                    ]);
+
+                    $flightType = str_contains($url, 'turkishservice') ? 'turkishservice' : 'flightservice';
+                    echo "data: " . json_encode([
+                        "type" => $flightType,
+                        "data" => [
+                            "error" => "Curl error: " . curl_error($handle)
+                        ]
+                    ]) . "\n\n";
+
+                    @ob_flush();
+                    flush();
+
+                    curl_multi_remove_handle($multiHandle, $handle);
+                    curl_close($handle);
+                    unset($curlHandles[$key]);
                 }
             }
+
+            usleep(100000); // 100ms delay to avoid busy waiting
         } while ($active && $status === CURLM_OK);
 
         curl_multi_close($multiHandle);
         Log::info('Finished streaming all flight responses.');
     }
+
 
     /**
      * Maps passenger types to API-specific codes.
