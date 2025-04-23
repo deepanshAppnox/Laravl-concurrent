@@ -158,12 +158,12 @@ class FlightController extends Controller
                         ]);
                         continue;
                     }
-                    $data = $this->normalize($flightType, $decoded);
+                    // $data = $this->normalize($flightType, $decoded);
                     if (json_last_error() === JSON_ERROR_NONE) {
                         echo "data: " . json_encode([
                             "type" => $flightType,
-                            // "data" => $flightType == "flightservice"?$decoded['result']['data']['itineraryGroup'][0]['flights']:$decoded['result']['data'],
-                            "data" => $data,
+                            "data" => $flightType == "flightservice"?$decoded['result']['data']:$decoded['result']['data'],
+                            // "data" => $data,
                         ]) . "\n\n";
                     } else {
                         echo "data: " . json_encode([

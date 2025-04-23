@@ -22,4 +22,4 @@ Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
 Route::get('/ping', function () {
     return response()->json(['message' => 'pong']);
 });
-Route::post('/flight-list',[FlightController::class,'streamFlightData']);
+Route::post('/v1/flight/stream',[FlightController::class,'streamFlightData']);
