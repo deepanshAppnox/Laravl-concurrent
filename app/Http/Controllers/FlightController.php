@@ -119,7 +119,7 @@ class FlightController extends Controller
                     'sessionid: ' . $sessionId,
                     'sessiontoken: ' . $sessionToken,
                 ],
-                CURLOPT_TIMEOUT            => 30,    // total timeout in seconds
+                CURLOPT_TIMEOUT            => 30,
                 CURLOPT_CONNECTTIMEOUT     => 10,
                 CURLOPT_LOW_SPEED_LIMIT    => 1,
                 CURLOPT_LOW_SPEED_TIME     => 10,
@@ -140,38 +140,42 @@ class FlightController extends Controller
                 $key = spl_object_id($handle);
                 $url = $curlHandles[$key]['url'];
 
+                $flightType = str_contains($url, 'turkishservice') ? 'turkishservice' : 'flightservice';
+
                 if ($info['result'] === CURLE_OK) {
                     $response = curl_multi_getcontent($handle);
                     $httpCode = curl_getinfo($handle, CURLINFO_HTTP_CODE);
 
                     Log::info("Response received from $url", [
-                        'http_code'     => $httpCode,
-                        'raw_response'  => $response
+                        'http_code'    => $httpCode,
+                        'raw_response' => $response
                     ]);
 
-                    $flightType = str_contains($url, 'turkishservice') ? 'turkishservice' : 'flightservice';
-
                     $decoded = json_decode($response, true);
-                    if(!$decoded['success']){
-                        Log::warning("$flightType response skipped due to success = false", [
-                            'message' => $decoded['message'] ?? 'No message',
-                        ]);
-                        continue;
-                    }
-                    // $data = $this->normalize($flightType, $decoded);
-                    if (json_last_error() === JSON_ERROR_NONE) {
-                        echo "data: " . json_encode([
-                            "type" => $flightType,
-                            "data" => $flightType == "flightservice"?$decoded['result']['data']:$decoded['result']['data'],
-                            // "data" => $data,
-                        ]) . "\n\n";
-                    } else {
+
+                    if (json_last_error() !== JSON_ERROR_NONE || !is_array($decoded)) {
                         echo "data: " . json_encode([
                             "type" => $flightType,
                             "data" => [
                                 "error" => "Invalid JSON from $flightType",
-                                "raw" => $response
+                                "raw"   => $response
                             ]
+                        ]) . "\n\n";
+                    } elseif (empty($decoded['success'])) {
+                        Log::warning("$flightType response skipped due to success = false", [
+                            'message' => $decoded['message'] ?? 'No message',
+                        ]);
+
+                        echo "data: " . json_encode([
+                            "type" => $flightType,
+                            "data" => [
+                                "error" => $decoded['message'] ?? "Unknown error from $flightType"
+                            ]
+                        ]) . "\n\n";
+                    } else {
+                        echo "data: " . json_encode([
+                            "type" => $flightType,
+                            "data" => $decoded['result']['data'] ?? []
                         ]) . "\n\n";
                     }
 
@@ -182,13 +186,13 @@ class FlightController extends Controller
                     curl_multi_remove_handle($multiHandle, $handle);
                     curl_close($handle);
                     unset($curlHandles[$key]);
+
                 } else {
                     Log::error("Curl error on $url", [
                         'error' => curl_error($handle),
                         'errno' => curl_errno($handle)
                     ]);
 
-                    $flightType = str_contains($url, 'turkishservice') ? 'turkishservice' : 'flightservice';
                     echo "data: " . json_encode([
                         "type" => $flightType,
                         "data" => [
