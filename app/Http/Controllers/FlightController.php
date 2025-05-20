@@ -17,10 +17,30 @@ class FlightController extends Controller
             header('Connection: keep-alive');
             header('X-Accel-Buffering: no');
 
-            $endpoints = [
-                "https://flightservice.bharatcrypto.com/api/v1/flight/search" => "flightservice",
-                "https://turkishservice.bharatcrypto.com/api/v1/shop/bestprice" => "turkishservice"
+            // Full endpoint list
+            $allEndpoints = [
+                "flightservice" => "https://flightservice.bharatcrypto.com/api/v1/flight/search",
+                "turkishservice" => "https://turkishservice.bharatcrypto.com/api/v1/shop/bestprice"
             ];
+
+            // Get selected services from payload
+            $selectedServices = $request->input('selectedServices', []);
+
+            // Filter endpoints based on selected services
+            $endpoints = [];
+            foreach ($selectedServices as $service) {
+                if (isset($allEndpoints[$service])) {
+                    $endpoints[$allEndpoints[$service]] = $service;
+                }
+            }
+
+            // Skip if no valid services selected
+            if (empty($endpoints)) {
+                echo "event: error\n";
+                echo 'data: ' . json_encode(['message' => 'No valid services selected']) . "\n\n";
+                flush();
+                return;
+            }
 
             $authToken = $request->header('Authorization', '');
             $sessionId = $request->header('sessionid', '');
@@ -35,6 +55,7 @@ class FlightController extends Controller
             'Connection' => 'keep-alive'
         ]);
     }
+
 
 
     private function prepareApiPayloads(array $endpoints, array $commonPayload)
